@@ -9,6 +9,11 @@ from risk_platform.domain.services.financial_metric_mapping import METRIC_CONCEP
 from risk_platform.domain.value_objects.canonical_financial_metric import CanonicalFinancialMetric
 
 SUPPORTED_FISCAL_PERIODS = {"FY", "Q1", "Q2", "Q3"}
+AMBIGUOUS_CONSOLIDATED_BAND_METRICS = {
+    CanonicalFinancialMetric.REVENUE,
+    CanonicalFinancialMetric.NET_INCOME,
+    CanonicalFinancialMetric.GROSS_PROFIT,
+}
 
 
 class SecStatementFactRepository(Protocol):
@@ -81,12 +86,45 @@ class FinancialStatementService:
                 if not concept_facts:
                     continue
 
+                if mapping.metric in AMBIGUOUS_CONSOLIDATED_BAND_METRICS:
+                    selected = FinancialStatementService._select_ambiguous_consolidated_fact(concept_facts)
+                    if selected is not None:
+                        return selected.value
+
                 selected = max(
                     concept_facts,
                     key=lambda fact: (FinancialStatementService._filed_date(fact.filed_on), fact.id),
                 )
                 return selected.value
         return None
+
+    @staticmethod
+    def _select_ambiguous_consolidated_fact(
+        concept_facts: list[SecFinancialStatementFact],
+    ) -> SecFinancialStatementFact | None:
+        if not concept_facts:
+            return None
+
+        latest_filed = max(FinancialStatementService._filed_date(fact.filed_on) for fact in concept_facts)
+        latest_facts = [
+            fact
+            for fact in concept_facts
+            if FinancialStatementService._filed_date(fact.filed_on) == latest_filed
+        ]
+        if not latest_facts:
+            return None
+
+        # Some annual filings include dimensioned rows mixed with consolidated
+        # totals under the same concept. For highly ambiguous sets, keep only
+        # consolidated-scale values near the filing max.
+        if len(latest_facts) >= 5:
+            max_value = max(fact.value for fact in latest_facts)
+            threshold = max_value * 0.95
+            consolidated_band = [fact for fact in latest_facts if fact.value >= threshold]
+            if consolidated_band:
+                return max(consolidated_band, key=lambda fact: fact.id)
+
+        return max(latest_facts, key=lambda fact: fact.id)
 
     @staticmethod
     def _filed_date(filed_on: str | None) -> date:

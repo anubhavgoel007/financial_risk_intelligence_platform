@@ -143,6 +143,221 @@ def test_within_same_concept_prefers_latest_filed_on_then_highest_id() -> None:
     assert result.metrics[CanonicalFinancialMetric.NET_INCOME] == 20.0
 
 
+def test_revenue_selection_ignores_dimensioned_tail_values_in_ambiguous_filing() -> None:
+    facts = [
+        SecFinancialStatementFact(
+            id=20865,
+            ticker="AAPL",
+            concept="RevenueFromContractWithCustomerExcludingAssessedTax",
+            value=265595000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=20870,
+            ticker="AAPL",
+            concept="RevenueFromContractWithCustomerExcludingAssessedTax",
+            value=84310000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=20884,
+            ticker="AAPL",
+            concept="RevenueFromContractWithCustomerExcludingAssessedTax",
+            value=260174000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=20889,
+            ticker="AAPL",
+            concept="RevenueFromContractWithCustomerExcludingAssessedTax",
+            value=91819000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=20901,
+            ticker="AAPL",
+            concept="RevenueFromContractWithCustomerExcludingAssessedTax",
+            value=274515000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=20904,
+            ticker="AAPL",
+            concept="RevenueFromContractWithCustomerExcludingAssessedTax",
+            value=64698000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+    ]
+
+    result = FinancialStatementService(FakeFactRepository(facts)).get_financial_metrics(
+        ticker="AAPL",
+        fiscal_year=2020,
+        fiscal_period="FY",
+    )
+
+    assert result.metrics[CanonicalFinancialMetric.REVENUE] == 274515000000.0
+
+
+def test_net_income_selection_ignores_dimensioned_tail_values_in_ambiguous_filing() -> None:
+    facts = [
+        SecFinancialStatementFact(
+            id=13550,
+            ticker="AAPL",
+            concept="NetIncomeLoss",
+            value=59531000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=13556,
+            ticker="AAPL",
+            concept="NetIncomeLoss",
+            value=19965000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=13570,
+            ticker="AAPL",
+            concept="NetIncomeLoss",
+            value=55256000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=13587,
+            ticker="AAPL",
+            concept="NetIncomeLoss",
+            value=57411000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+        SecFinancialStatementFact(
+            id=13590,
+            ticker="AAPL",
+            concept="NetIncomeLoss",
+            value=12673000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="income_statement",
+        ),
+    ]
+
+    result = FinancialStatementService(FakeFactRepository(facts)).get_financial_metrics(
+        ticker="AAPL",
+        fiscal_year=2020,
+        fiscal_period="FY",
+    )
+
+    assert result.metrics[CanonicalFinancialMetric.NET_INCOME] == 57411000000.0
+
+
+def test_gross_profit_selection_ignores_dimensioned_tail_values_in_ambiguous_filing() -> None:
+    facts = [
+        SecFinancialStatementFact(
+            id=8601,
+            ticker="AAPL",
+            concept="GrossProfit",
+            value=101839000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="balance_sheet",
+        ),
+        SecFinancialStatementFact(
+            id=8621,
+            ticker="AAPL",
+            concept="GrossProfit",
+            value=98392000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="balance_sheet",
+        ),
+        SecFinancialStatementFact(
+            id=8638,
+            ticker="AAPL",
+            concept="GrossProfit",
+            value=104956000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="balance_sheet",
+        ),
+        SecFinancialStatementFact(
+            id=8641,
+            ticker="AAPL",
+            concept="GrossProfit",
+            value=24689000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="balance_sheet",
+        ),
+        SecFinancialStatementFact(
+            id=8631,
+            ticker="AAPL",
+            concept="GrossProfit",
+            value=22370000000.0,
+            unit="USD",
+            fiscal_year=2020,
+            fiscal_period="FY",
+            filed_on="2020-10-30",
+            statement_type="balance_sheet",
+        ),
+    ]
+
+    result = FinancialStatementService(FakeFactRepository(facts)).get_financial_metrics(
+        ticker="AAPL",
+        fiscal_year=2020,
+        fiscal_period="FY",
+    )
+
+    assert result.metrics[CanonicalFinancialMetric.GROSS_PROFIT] == 104956000000.0
+
+
 def test_unavailable_metric_returns_none() -> None:
     facts: list[SecFinancialStatementFact] = []
 
