@@ -16,6 +16,7 @@ load_dotenv(ROOT / ".env.local", override=False)
 
 from risk_platform.application.use_cases.financial_statement_service import FinancialStatementService
 from risk_platform.application.use_cases.financial_ratio_service import FinancialRatioService
+from risk_platform.application.use_cases.financial_risk_feature_service import FinancialRiskFeatureService
 from risk_platform.infrastructure.database.repositories.sec_statement_repository import PostgresSecStatementRepository
 
 
@@ -30,6 +31,7 @@ def main() -> None:
     repository = PostgresSecStatementRepository(database_url=database_url)
     service = FinancialStatementService(repository)
     ratio_service = FinancialRatioService(service)
+    risk_feature_service = FinancialRiskFeatureService(ratio_service)
 
     result = service.get_financial_metrics(ticker, fiscal_year, fiscal_period)
     ratio_result = ratio_service.calculate_from_financial_metrics(result)
@@ -94,6 +96,26 @@ def main() -> None:
         "net_profit_margin_change, debt_to_equity_change, current_ratio_change, "
         "operating_cash_flow_growth, free_cash_flow_growth"
     )
+
+    risk_feature_history = risk_feature_service.get_risk_feature_history(
+        ticker=ticker,
+        start_fiscal_year=history_start_year,
+        end_fiscal_year=history_end_year,
+        fiscal_period=fiscal_period,
+    )
+
+    def fmt(value: float | None) -> str:
+        return "N/A" if value is None else f"{value:.4f}"
+
+    print(f"\nDeterministic risk features for {risk_feature_history.ticker} {risk_feature_history.fiscal_period}")
+    print(f"Fiscal years: {risk_feature_history.start_fiscal_year}-{risk_feature_history.end_fiscal_year}")
+    for feature_set in risk_feature_history.features:
+        print("-" * 92)
+        print(f"FY{feature_set.fiscal_year}")
+        for category in ("liquidity", "leverage", "profitability", "cash_flow", "growth"):
+            category_values = getattr(feature_set, category)
+            rendered = ", ".join(f"{name}={fmt(value)}" for name, value in category_values.items())
+            print(f"  {category:<14} {rendered}")
 
 
 if __name__ == "__main__":
