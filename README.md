@@ -10,7 +10,7 @@ XGBoost, and the Gemini API, following Clean Architecture and SOLID principles.
 - **Data/ML**: Pandas, XGBoost, scikit-learn
 - **LLM**: Gemini API (risk narrative generation)
 - **Testing**: Pytest
-- **Packaging/Runtime**: Docker
+- **Packaging/Runtime**: Python + PostgreSQL
 
 ## Architecture
 
@@ -58,7 +58,6 @@ tests/
 
 scripts/     # seed_db.py, train_model.py, run_migrations.py (ops entry points)
 notebooks/   # exploratory analysis; nothing imported by the app
-docker/      # Dockerfile + docker-compose.yml
 ```
 
 ## Folder Responsibilities
@@ -85,6 +84,8 @@ python -m venv .venv
 .venv\Scripts\activate       # Windows
 pip install -e ".[dev]"
 cp .env.example .env
-docker compose -f docker/docker-compose.yml up -d db
+install PostgreSQL locally and create the `risk_platform` user/database
 pytest
 ```
+
+For local development, use a PostgreSQL server on `localhost:5432` and keep `DATABASE_URL` set in `.env`.
