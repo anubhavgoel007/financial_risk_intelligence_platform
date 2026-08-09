@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import time
 from typing import Any
 
 import httpx
@@ -11,32 +11,40 @@ from risk_platform.domain.entities.sec_financial_statement import SecFinancialSt
 class SecEdgarClient:
     """Fetches and normalizes SEC EDGAR company facts for a ticker."""
 
-    def __init__(self, user_agent: str | None = None) -> None:
+    def __init__(
+        self,
+        user_agent: str | None = None,
+        *,
+        request_delay_seconds: float = 0.35,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 0.5,
+        retry_backoff_multiplier: float = 2.0,
+        timeout_seconds: float = 20.0,
+    ) -> None:
         self._user_agent = user_agent or "risk-platform/0.1"
+        self._request_delay_seconds = max(request_delay_seconds, 0.0)
+        self._max_retries = max(max_retries, 0)
+        self._retry_backoff_seconds = max(retry_backoff_seconds, 0.0)
+        self._retry_backoff_multiplier = max(retry_backoff_multiplier, 1.0)
+        self._timeout_seconds = max(timeout_seconds, 1.0)
         self._headers = {
             "User-Agent": self._user_agent,
             "Accept-Encoding": "gzip, deflate",
             "Accept": "application/json",
         }
+        self._last_request_monotonic: float | None = None
+        self._ticker_to_cik_cache: dict[str, str] = {}
 
     def fetch_company_facts(self, ticker: str) -> list[SecFinancialStatement]:
         if not ticker:
             raise ValueError("ticker is required")
 
-        cik = self._resolve_cik(ticker)
-        try:
-            response = httpx.get(
-                f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
-                headers=self._headers,
-                timeout=20.0,
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                raise ValueError(f"No SEC company facts found for ticker {ticker}") from exc
-            raise
-
-        payload = response.json()
+        normalized_ticker = ticker.strip().upper()
+        cik = self._resolve_cik(normalized_ticker)
+        payload = self._request_json_with_retry(
+            f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
+            not_found_message=f"No SEC company facts found for ticker {normalized_ticker}",
+        )
         return self.normalize_company_facts(payload, ticker=ticker.upper())
 
     def normalize_company_facts(self, payload: dict[str, Any], *, ticker: str) -> list[SecFinancialStatement]:
@@ -94,13 +102,12 @@ class SecEdgarClient:
         return statements
 
     def _resolve_cik(self, ticker: str) -> str:
-        response = httpx.get(
-            "https://www.sec.gov/files/company_tickers.json",
-            headers=self._headers,
-            timeout=20.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        normalized_ticker = ticker.strip().upper()
+        cached = self._ticker_to_cik_cache.get(normalized_ticker)
+        if cached is not None:
+            return cached
+
+        payload = self._request_json_with_retry("https://www.sec.gov/files/company_tickers.json")
         if not isinstance(payload, dict):
             raise ValueError("SEC ticker feed did not return a JSON object")
 
@@ -109,15 +116,71 @@ class SecEdgarClient:
                 continue
 
             item_ticker = str(item.get("ticker") or item.get("ticker_symbol") or "").upper()
-            if item_ticker != ticker.upper():
+            if item_ticker != normalized_ticker:
                 continue
 
             cik_value = item.get("cik_str") or item.get("cik")
             if cik_value is None:
-                raise ValueError(f"SEC ticker entry for {ticker} is missing a CIK")
-            return str(cik_value).zfill(10)
+                raise ValueError(f"SEC ticker entry for {normalized_ticker} is missing a CIK")
+            resolved = str(cik_value).zfill(10)
+            self._ticker_to_cik_cache[normalized_ticker] = resolved
+            return resolved
 
-        raise ValueError(f"No CIK found for ticker {ticker}")
+        raise ValueError(f"No CIK found for ticker {normalized_ticker}")
+
+    def _request_json_with_retry(
+        self,
+        url: str,
+        *,
+        not_found_message: str | None = None,
+    ) -> dict[str, Any]:
+        backoff_seconds = self._retry_backoff_seconds
+        attempts = 0
+        while True:
+            self._apply_request_delay()
+            try:
+                response = httpx.get(
+                    url,
+                    headers=self._headers,
+                    timeout=self._timeout_seconds,
+                )
+                if response.status_code == 404 and not_found_message:
+                    raise ValueError(not_found_message)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("SEC API did not return a JSON object")
+                return payload
+            except ValueError:
+                raise
+            except (httpx.TimeoutException, httpx.TransportError):
+                if attempts >= self._max_retries:
+                    raise
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                retryable = status_code == 429 or (status_code is not None and 500 <= status_code < 600)
+                if status_code == 404 and not_found_message:
+                    raise ValueError(not_found_message) from exc
+                if not retryable or attempts >= self._max_retries:
+                    raise
+
+            attempts += 1
+            if backoff_seconds > 0:
+                time.sleep(backoff_seconds)
+            backoff_seconds *= self._retry_backoff_multiplier
+
+    def _apply_request_delay(self) -> None:
+        if self._request_delay_seconds <= 0:
+            return
+
+        now = time.monotonic()
+        if self._last_request_monotonic is not None:
+            elapsed = now - self._last_request_monotonic
+            remaining = self._request_delay_seconds - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+                now = time.monotonic()
+        self._last_request_monotonic = now
 
     def _classify_statement_type(self, concept: str) -> str:
         lowered = concept.lower()

@@ -59,6 +59,56 @@ class PostgresSecStatementRepository:
             )
         )
 
+    def list_available_tickers(
+        self,
+        *,
+        fiscal_period: str = "FY",
+        min_distinct_years: int = 1,
+        limit: int = 20,
+    ) -> list[str]:
+        if min_distinct_years <= 0:
+            raise ValueError("min_distinct_years must be a positive integer")
+        if limit <= 0:
+            raise ValueError("limit must be a positive integer")
+
+        normalized_period = fiscal_period.upper()
+        if not self._database_url:
+            return self._list_available_tickers_in_memory(
+                fiscal_period=normalized_period,
+                min_distinct_years=min_distinct_years,
+                limit=limit,
+            )
+        return asyncio.run(
+            self._list_available_tickers(
+                fiscal_period=normalized_period,
+                min_distinct_years=min_distinct_years,
+                limit=limit,
+            )
+        )
+
+    def list_available_fiscal_years_for_ticker(
+        self,
+        *,
+        ticker: str,
+        fiscal_period: str = "FY",
+    ) -> list[int]:
+        normalized_ticker = ticker.strip().upper()
+        normalized_period = fiscal_period.upper()
+        if not normalized_ticker:
+            return []
+
+        if not self._database_url:
+            return self._list_available_fiscal_years_for_ticker_in_memory(
+                ticker=normalized_ticker,
+                fiscal_period=normalized_period,
+            )
+        return asyncio.run(
+            self._list_available_fiscal_years_for_ticker(
+                ticker=normalized_ticker,
+                fiscal_period=normalized_period,
+            )
+        )
+
     def _get_facts_for_period_in_memory(
         self,
         *,
@@ -101,6 +151,46 @@ class PostgresSecStatementRepository:
             )
         return results
 
+    def _list_available_tickers_in_memory(
+        self,
+        *,
+        fiscal_period: str,
+        min_distinct_years: int,
+        limit: int,
+    ) -> list[str]:
+        by_ticker: dict[str, set[int]] = {}
+        for statement in self._memory_store:
+            if statement.fiscal_year is None or statement.fiscal_period is None:
+                continue
+            if statement.fiscal_period.upper() != fiscal_period:
+                continue
+            ticker = statement.ticker.upper()
+            by_ticker.setdefault(ticker, set()).add(statement.fiscal_year)
+
+        eligible = [
+            ticker
+            for ticker, years in by_ticker.items()
+            if len(years) >= min_distinct_years
+        ]
+        eligible.sort()
+        return eligible[:limit]
+
+    def _list_available_fiscal_years_for_ticker_in_memory(
+        self,
+        *,
+        ticker: str,
+        fiscal_period: str,
+    ) -> list[int]:
+        years = {
+            statement.fiscal_year
+            for statement in self._memory_store
+            if statement.fiscal_year is not None
+            and statement.fiscal_period is not None
+            and statement.ticker.upper() == ticker
+            and statement.fiscal_period.upper() == fiscal_period
+        }
+        return sorted(years)
+
     async def _save_many(self, statements: list[SecFinancialStatement]) -> int:
         conn: asyncpg.Connection = await asyncpg.connect(self._database_url)
         try:
@@ -122,13 +212,61 @@ class PostgresSecStatementRepository:
                 )
                 """
             )
+            await conn.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY
+                                UPPER(ticker),
+                                cik,
+                                company_name,
+                                concept,
+                                value,
+                                unit,
+                                COALESCE(fiscal_year, -1),
+                                COALESCE(fiscal_period, ''),
+                                COALESCE(filed_on, ''),
+                                statement_type,
+                                source
+                            ORDER BY id
+                        ) AS rn
+                    FROM sec_financial_statements
+                )
+                DELETE FROM sec_financial_statements target
+                USING ranked
+                WHERE target.id = ranked.id
+                  AND ranked.rn > 1
+                """
+            )
+            await conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_sec_financial_statements_dedup
+                ON sec_financial_statements (
+                    UPPER(ticker),
+                    cik,
+                    company_name,
+                    concept,
+                    value,
+                    unit,
+                    COALESCE(fiscal_year, -1),
+                    COALESCE(fiscal_period, ''),
+                    COALESCE(filed_on, ''),
+                    statement_type,
+                    source
+                )
+                """
+            )
+            inserted_count = 0
             for statement in statements:
-                await conn.execute(
+                status = await conn.execute(
                     """
                     INSERT INTO sec_financial_statements (
                         ticker, cik, company_name, concept, value, unit,
                         fiscal_year, fiscal_period, filed_on, statement_type, source
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ON CONFLICT DO NOTHING
                     """,
                     statement.ticker,
                     statement.cik,
@@ -142,7 +280,64 @@ class PostgresSecStatementRepository:
                     statement.statement_type,
                     statement.source,
                 )
-            return len(statements)
+                try:
+                    inserted_count += int(status.split()[-1])
+                except (ValueError, IndexError):
+                    # Defensive fallback: command tags should end with row count.
+                    pass
+            return inserted_count
+        finally:
+            await conn.close()
+
+    async def _list_available_tickers(
+        self,
+        *,
+        fiscal_period: str,
+        min_distinct_years: int,
+        limit: int,
+    ) -> list[str]:
+        conn: asyncpg.Connection = await asyncpg.connect(self._database_url)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT UPPER(ticker) AS ticker
+                FROM sec_financial_statements
+                WHERE fiscal_year IS NOT NULL
+                  AND fiscal_period = $1
+                GROUP BY UPPER(ticker)
+                HAVING COUNT(DISTINCT fiscal_year) >= $2
+                ORDER BY UPPER(ticker)
+                LIMIT $3
+                """,
+                fiscal_period,
+                min_distinct_years,
+                limit,
+            )
+            return [str(row["ticker"]) for row in rows]
+        finally:
+            await conn.close()
+
+    async def _list_available_fiscal_years_for_ticker(
+        self,
+        *,
+        ticker: str,
+        fiscal_period: str,
+    ) -> list[int]:
+        conn: asyncpg.Connection = await asyncpg.connect(self._database_url)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT fiscal_year
+                FROM sec_financial_statements
+                WHERE UPPER(ticker) = UPPER($1)
+                  AND fiscal_year IS NOT NULL
+                  AND fiscal_period = $2
+                ORDER BY fiscal_year
+                """,
+                ticker,
+                fiscal_period,
+            )
+            return [int(row["fiscal_year"]) for row in rows]
         finally:
             await conn.close()
 

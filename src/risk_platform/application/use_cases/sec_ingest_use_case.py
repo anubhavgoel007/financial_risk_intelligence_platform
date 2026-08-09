@@ -23,3 +23,11 @@ class IngestSecFinancialStatementsUseCase:
             return 0
         persisted_count = self._repository.save_many(statements)
         return persisted_count if persisted_count is not None else len(statements)
+
+    def execute_many(self, tickers: list[str]) -> dict[str, int]:
+        """Ingest a list of tickers sequentially and return per-ticker persisted counts."""
+        counts: dict[str, int] = {}
+        normalized_tickers = [ticker.strip().upper() for ticker in tickers if ticker and ticker.strip()]
+        for ticker in normalized_tickers:
+            counts[ticker] = self.execute(ticker)
+        return counts
