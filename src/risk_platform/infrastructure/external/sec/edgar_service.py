@@ -20,6 +20,7 @@ class SecEdgarClient:
         retry_backoff_seconds: float = 0.5,
         retry_backoff_multiplier: float = 2.0,
         timeout_seconds: float = 20.0,
+        legacy_cik_overrides: dict[str, list[str]] | None = None,
     ) -> None:
         self._user_agent = user_agent or "risk-platform/0.1"
         self._request_delay_seconds = max(request_delay_seconds, 0.0)
@@ -34,18 +35,32 @@ class SecEdgarClient:
         }
         self._last_request_monotonic: float | None = None
         self._ticker_to_cik_cache: dict[str, str] = {}
+        self._legacy_cik_overrides = self._normalize_legacy_cik_overrides(legacy_cik_overrides)
 
     def fetch_company_facts(self, ticker: str) -> list[SecFinancialStatement]:
         if not ticker:
             raise ValueError("ticker is required")
 
         normalized_ticker = ticker.strip().upper()
-        cik = self._resolve_cik(normalized_ticker)
-        payload = self._request_json_with_retry(
-            f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
-            not_found_message=f"No SEC company facts found for ticker {normalized_ticker}",
-        )
-        return self.normalize_company_facts(payload, ticker=ticker.upper())
+        statements: list[SecFinancialStatement] = []
+        for cik in self._resolve_ciks_for_ticker(normalized_ticker):
+            payload = self._request_json_with_retry(
+                f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
+                not_found_message=(
+                    f"No SEC company facts found for ticker {normalized_ticker} and CIK {cik}"
+                ),
+            )
+            statements.extend(self.normalize_company_facts(payload, ticker=normalized_ticker))
+
+        return self._deduplicate_statements(statements)
+
+    def _resolve_ciks_for_ticker(self, ticker: str) -> list[str]:
+        primary_cik = self._resolve_cik(ticker)
+        ciks = [primary_cik]
+        for legacy_cik in self._legacy_cik_overrides.get(ticker, []):
+            if legacy_cik not in ciks:
+                ciks.append(legacy_cik)
+        return ciks
 
     def normalize_company_facts(self, payload: dict[str, Any], *, ticker: str) -> list[SecFinancialStatement]:
         if not isinstance(payload, dict):
@@ -127,6 +142,57 @@ class SecEdgarClient:
             return resolved
 
         raise ValueError(f"No CIK found for ticker {normalized_ticker}")
+
+    @staticmethod
+    def _normalize_legacy_cik_overrides(
+        overrides: dict[str, list[str]] | None,
+    ) -> dict[str, list[str]]:
+        if not overrides:
+            return {}
+
+        normalized: dict[str, list[str]] = {}
+        for raw_ticker, raw_ciks in overrides.items():
+            ticker = raw_ticker.strip().upper()
+            if not ticker:
+                continue
+            ciks: list[str] = []
+            seen: set[str] = set()
+            for raw_cik in raw_ciks:
+                cik = str(raw_cik).strip()
+                if not cik:
+                    continue
+                normalized_cik = cik.zfill(10)
+                if normalized_cik in seen:
+                    continue
+                seen.add(normalized_cik)
+                ciks.append(normalized_cik)
+            if ciks:
+                normalized[ticker] = ciks
+        return normalized
+
+    @staticmethod
+    def _deduplicate_statements(
+        statements: list[SecFinancialStatement],
+    ) -> list[SecFinancialStatement]:
+        deduped: list[SecFinancialStatement] = []
+        seen: set[tuple[object, ...]] = set()
+        for statement in statements:
+            dedup_key = (
+                statement.ticker.upper(),
+                statement.concept,
+                statement.value,
+                statement.unit,
+                statement.fiscal_year,
+                statement.fiscal_period,
+                statement.filed_on,
+                statement.statement_type,
+                statement.source,
+            )
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            deduped.append(statement)
+        return deduped
 
     def _request_json_with_retry(
         self,

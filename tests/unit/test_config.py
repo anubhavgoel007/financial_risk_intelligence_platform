@@ -34,3 +34,17 @@ def test_settings_deduplicates_tickers_and_falls_back(monkeypatch) -> None:
     monkeypatch.setenv("SEC_TICKER", "nvda")
     settings_fallback = Settings()
     assert settings_fallback.sec_tickers == ["NVDA"]
+
+
+def test_settings_parses_legacy_cik_overrides(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "SEC_LEGACY_CIK_OVERRIDES",
+        "xom:34088|0000034088; badsegment ; cvx:0000093410",
+    )
+
+    settings = Settings()
+
+    assert settings.sec_legacy_cik_overrides == {
+        "XOM": ["0000034088"],
+        "CVX": ["0000093410"],
+    }

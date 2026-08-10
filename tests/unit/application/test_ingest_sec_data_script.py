@@ -43,6 +43,18 @@ def test_resolve_tickers_from_env_falls_back_to_sec_ticker(
     assert tickers == ["NVDA"]
 
 
+def test_resolve_legacy_cik_overrides_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    script_module = _load_ingest_script_module()
+    monkeypatch.setenv("SEC_LEGACY_CIK_OVERRIDES", "xom:34088|0000034088;cvx:0000093410")
+
+    overrides = script_module.resolve_legacy_cik_overrides_from_env()
+
+    assert overrides == {
+        "XOM": ["0000034088"],
+        "CVX": ["0000093410"],
+    }
+
+
 def test_main_reports_inserted_counts_per_ticker(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -50,10 +62,13 @@ def test_main_reports_inserted_counts_per_ticker(
     script_module = _load_ingest_script_module()
     monkeypatch.setenv("SEC_TICKERS", "aapl,msft")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("SEC_LEGACY_CIK_OVERRIDES", "XOM:0000034088")
+
+    captured_client_kwargs: dict[str, Any] = {}
 
     class FakeClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
+            captured_client_kwargs.update(kwargs)
 
     class FakeRepository:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -73,6 +88,8 @@ def test_main_reports_inserted_counts_per_ticker(
 
     script_module.main()
     output = capsys.readouterr().out
+
+    assert captured_client_kwargs["legacy_cik_overrides"] == {"XOM": ["0000034088"]}
 
     assert "Persisted 2 SEC financial statement rows for AAPL into PostgreSQL" in output
     assert "Persisted 1 SEC financial statement rows for MSFT into PostgreSQL" in output

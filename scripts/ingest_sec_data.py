@@ -34,6 +34,39 @@ def resolve_tickers_from_env() -> list[str]:
     return [fallback]
 
 
+def resolve_legacy_cik_overrides_from_env() -> dict[str, list[str]]:
+    raw_overrides = os.getenv("SEC_LEGACY_CIK_OVERRIDES", "")
+    if not raw_overrides.strip():
+        return {}
+
+    normalized: dict[str, list[str]] = {}
+    segments = [segment.strip() for segment in raw_overrides.replace(",", ";").split(";") if segment.strip()]
+    for segment in segments:
+        if ":" not in segment:
+            continue
+        ticker_part, ciks_part = segment.split(":", maxsplit=1)
+        ticker = ticker_part.strip().upper()
+        if not ticker:
+            continue
+
+        ciks: list[str] = []
+        seen: set[str] = set()
+        for raw_cik in ciks_part.split("|"):
+            cik = raw_cik.strip()
+            if not cik:
+                continue
+            normalized_cik = cik.zfill(10)
+            if normalized_cik in seen:
+                continue
+            seen.add(normalized_cik)
+            ciks.append(normalized_cik)
+
+        if ciks:
+            normalized[ticker] = ciks
+
+    return normalized
+
+
 def _print_ingestion_summary(*, tickers: Iterable[str], counts: dict[str, int], database_url: str | None) -> None:
     ticker_list = list(tickers)
     total_rows = sum(counts.values())
@@ -53,6 +86,7 @@ def main() -> None:
     max_retries = int(os.getenv("SEC_MAX_RETRIES", "3"))
     retry_backoff_seconds = float(os.getenv("SEC_RETRY_BACKOFF_SECONDS", "0.5"))
     retry_backoff_multiplier = float(os.getenv("SEC_RETRY_BACKOFF_MULTIPLIER", "2.0"))
+    legacy_cik_overrides = resolve_legacy_cik_overrides_from_env()
     database_url = os.getenv("DATABASE_URL")
 
     client = SecEdgarClient(
@@ -61,6 +95,7 @@ def main() -> None:
         max_retries=max_retries,
         retry_backoff_seconds=retry_backoff_seconds,
         retry_backoff_multiplier=retry_backoff_multiplier,
+        legacy_cik_overrides=legacy_cik_overrides,
     )
     repository = PostgresSecStatementRepository(database_url=database_url)
     use_case = IngestSecFinancialStatementsUseCase(client=client, repository=repository)
